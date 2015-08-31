@@ -1,2 +1,2 @@
-# akka-http-sample
-Sample code to show how to use akka-http
+# akka-http-prototype
+Try some akka-http features
