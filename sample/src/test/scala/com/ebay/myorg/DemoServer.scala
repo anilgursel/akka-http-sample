@@ -1,16 +1,15 @@
 package com.ebay.myorg
 
-
 import akka.actor.{Actor, ActorRef, ActorSystem, Props, _}
 import akka.http.scaladsl.Http
-import akka.http.scaladsl.model.HttpEntity.{ChunkStreamPart, Chunk, LastChunk}
+import akka.http.scaladsl.model.HttpEntity.{Chunk, LastChunk}
 import akka.http.scaladsl.model.Uri.Path
 import akka.http.scaladsl.model._
 import akka.http.scaladsl.model.headers.RawHeader
 import akka.http.scaladsl.server.Directives._
 import akka.http.scaladsl.server.Route
 import akka.pattern.ask
-import akka.stream.{OverflowStrategy, ActorMaterializer}
+import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Flow, Sink, Source}
 import akka.util.Timeout
 import com.typesafe.config.{Config, ConfigFactory}
@@ -18,6 +17,7 @@ import com.typesafe.config.{Config, ConfigFactory}
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
 import scala.io.StdIn
+import RequestContext._
 
 object DemoServer extends App {
   val testConf: Config = ConfigFactory.parseString( """
@@ -35,12 +35,6 @@ object DemoServer extends App {
   val routeDef: Route = get {
     path("index") {
       complete("From Route!")
-    }
-  }
-
-  implicit def attributes2Headers(attributes: Map[String, Any]): Seq[HttpHeader] = {
-    attributes.toSeq.map {
-      attr => RawHeader(attr._1, String.valueOf(attr._2))
     }
   }
 
@@ -116,32 +110,7 @@ object DemoServer extends App {
 
 }
 
-case class RequestContext(request: HttpRequest,
-                          response: Option[HttpResponse] = None,
-                          attributes: Map[String, Any] = Map.empty) {
-  def withAttributes(attributes: (String, Any)*): RequestContext = {
-    this.copy(attributes = this.attributes ++ attributes)
-  }
 
-  def attribute[T](key: String): Option[T] = {
-    attributes.get(key) match {
-      case None => None
-      case Some(null) => None
-      case Some(value) => Some(value.asInstanceOf[T])
-    }
-  }
-
-  def addRequestHeaders(headers: HttpHeader*): RequestContext = {
-    copy(request = request.copy(headers = request.headers ++ headers))
-  }
-
-  def addResponseHeaders(headers: HttpHeader*): RequestContext = {
-    response.fold(this) {
-      resp => copy(response = Option(resp.copy(headers = request.headers ++ headers)))
-    }
-  }
-
-}
 
 class DemoActor extends Actor {
   implicit val mat = ActorMaterializer()
