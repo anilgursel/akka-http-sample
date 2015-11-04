@@ -1,0 +1,10 @@
+<aspectj>
+    <aspects>
+        <aspect name="com.ebay.myorg.aop.PipelineAspects"/>
+    </aspects>
+
+    <weaver options="-XnoInline">
+        <include within="com.ebay.myorg..*"/>
+    </weaver>
+
+</aspectj>
