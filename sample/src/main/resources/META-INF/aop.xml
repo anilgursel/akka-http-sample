@@ -4,7 +4,8 @@
     </aspects>
 
     <weaver options="-XnoInline">
-        <include within="com.ebay.myorg..*"/>
+        <include within="com.ebay.myorg.aop.PipelineAspects"/>
+        <include within="com.ebay.myorg.RequestContext"/>
     </weaver>
 
 </aspectj>

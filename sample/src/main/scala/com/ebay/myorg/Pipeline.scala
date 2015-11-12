@@ -3,8 +3,10 @@ package com.ebay.myorg
 import akka.http.scaladsl.model.{HttpRequest, HttpResponse}
 import akka.stream.Materializer
 import akka.stream.scaladsl.{Flow, Keep, Sink, Source}
+import com.ebay.squbs.rocksqubs.cal.ctx.{CalContext, CalScopeAware}
 
 import scala.concurrent.{ExecutionContext, Future}
+import scala.util.Try
 
 /**
  * Created by lma on 11/2/2015.
@@ -23,7 +25,7 @@ trait AsyncHandler extends Handler {
 case class PipelineSetting(inbound: Seq[Handler], outbound: Seq[Handler])
 
 case class Pipeline(setting: PipelineSetting,
-                    master: Flow[RequestContext, RequestContext, Unit])(implicit exec : ExecutionContext) {
+                    master: Flow[RequestContext, RequestContext, Unit])(implicit exec: ExecutionContext) {
 
 
   val inbound: Flow[RequestContext, RequestContext, Unit] = genFlow(setting.inbound)
@@ -31,23 +33,33 @@ case class Pipeline(setting: PipelineSetting,
 
   private def genFlow(handlers: Seq[Handler]) = {
     Flow[RequestContext].mapAsync(1) {
-      ctx => process(Left(ctx), handlers) match {
-        case Left(rc) => Future.successful(rc)
+      ctx => process(Left(Try(ctx)), handlers) match {
+        case Left(rc) => Future.fromTry(rc)
         case Right(frc) => frc
       }
     }
   }
 
-  private def process(ctx: Either[RequestContext, Future[RequestContext]],
-                      rest: Seq[Handler]): Either[RequestContext, Future[RequestContext]] = {
+  private def calWrapper[T](rc: RequestContext, f: => T): T = {
+    if(rc.isInstanceOf[CalScopeAware]){
+      val csa = rc.asInstanceOf[CalScopeAware]
+      CalContext.withContext(csa.calScope) {
+        f
+      }
+    }else f
+  }
+
+
+  private def process(ctx: Either[Try[RequestContext], Future[RequestContext]],
+                      rest: Seq[Handler]): Either[Try[RequestContext], Future[RequestContext]] = {
 
     val newCtx = rest.size match {
       case 0 => ctx
       case _ => (rest(0), ctx) match {
-        case (h: SyncHandler, Left(c)) => Left(h.handle(c))
-        case (h: SyncHandler, Right(fc)) => Right(fc.map(r => h.handle(r)))
-        case (h: AsyncHandler, Left(c)) => Right(h.handle(c))
-        case (h: AsyncHandler, Right(fc)) => Right(fc.flatMap(r => h.handle(r)))
+        case (h: SyncHandler, Left(c)) => Left(c.map(rc => calWrapper(rc, h.handle(rc))))
+        case (h: SyncHandler, Right(fc)) => Right(fc.map(rc => calWrapper(rc, h.handle(rc))))
+        case (h: AsyncHandler, Left(c)) => Right(Future.fromTry(c).flatMap(rc => calWrapper(rc, h.handle(rc))))
+        case (h: AsyncHandler, Right(fc)) => Right(fc.flatMap(rc => calWrapper(rc, h.handle(rc))))
       }
     }
 
