@@ -10,6 +10,7 @@ import org.aspectj.lang.annotation._
 @Aspect
 class PipelineAspects {
 
+  /*
   @DeclareMixin("com.ebay.myorg.RequestContext")
   def mixinCalScopeToRequestContext: CalScopeAware = CalScopeAware.default
 
@@ -35,27 +36,26 @@ class PipelineAspects {
     else pjp.proceed()
   }
 
-  //below can be replaced by static interception
+  @Pointcut("execution(* com.ebay.myorg.SyncHandler.handle(..)) && args(requestContext)")
+  def syncHandle(requestContext: CalScopeAware): Unit = {}
 
-//  @Pointcut("execution(* com.ebay.myorg.SyncHandler.handle(..)) && args(requestContext)")
-//  def syncHandle(requestContext: CalScopeAware): Unit = {}
-//
-//  @Around("syncHandle(requestContext)")
-//  def aroundSyncHandle(pjp: ProceedingJoinPoint, requestContext: CalScopeAware) = {
-//    CalContext.withContext(requestContext.calScope) {
-//      pjp.proceed()
-//    }
-//  }
-//
-//  @Pointcut("execution(* com.ebay.myorg.AsyncHandler.handle(..)) && args(requestContext)")
-//  def asyncHandle(requestContext: CalScopeAware): Unit = {}
-//
-//  @Around("asyncHandle(requestContext)")
-//  def aroundAsyncHandle(pjp: ProceedingJoinPoint, requestContext: CalScopeAware) = {
-//    CalContext.withContext(requestContext.calScope) {
-//      pjp.proceed()
-//    }
-//  }
+  @Around("syncHandle(requestContext)")
+  def aroundSyncHandle(pjp: ProceedingJoinPoint, requestContext: CalScopeAware) = {
+    CalContext.withContext(requestContext.calScope) {
+      pjp.proceed()
+    }
+  }
 
+  @Pointcut("execution(* com.ebay.myorg.AsyncHandler.handle(..)) && args(requestContext)")
+  def asyncHandle(requestContext: CalScopeAware): Unit = {}
+
+  @Around("asyncHandle(requestContext)")
+  def aroundAsyncHandle(pjp: ProceedingJoinPoint, requestContext: CalScopeAware) = {
+    CalContext.withContext(requestContext.calScope) {
+      pjp.proceed()
+    }
+  }
+
+*/
 
 }

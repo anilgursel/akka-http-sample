@@ -2,13 +2,17 @@ package com.ebay.myorg
 
 import akka.http.scaladsl.model.headers.RawHeader
 import akka.http.scaladsl.model.{HttpHeader, HttpRequest, HttpResponse}
+import com.ebay.squbs.rocksqubs.cal.ctx.{CalScope, CalScopeAware}
 
 /**
  * Created by lma on 10/27/2015.
  */
 case class RequestContext(request: HttpRequest,
                           response: Option[HttpResponse] = None,
-                          attributes: Map[String, Any] = Map.empty) {
+                          attributes: Map[String, Any] = Map.empty) extends CalScopeAware {
+
+  val calScope: CalScope = CalScopeAware.default.calScope
+
   def withAttributes(attributes: (String, Any)*): RequestContext = {
     this.copy(attributes = this.attributes ++ attributes)
   }
@@ -30,6 +34,7 @@ case class RequestContext(request: HttpRequest,
       resp => copy(response = Option(resp.copy(headers = request.headers ++ headers)))
     }
   }
+
 
 }
 

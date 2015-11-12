@@ -8,11 +8,12 @@ import akka.stream.scaladsl.Flow
 import akka.testkit.TestKit
 import com.ebay.myorg.RequestContext._
 import com.ebay.squbs.rocksqubs.cal.CalLogging
-import com.ebay.squbs.rocksqubs.cal.ctx.{CalScope, CalContext}
+import com.ebay.squbs.rocksqubs.cal.ctx.{CalContext, CalScope}
 import org.scalatest.{FlatSpecLike, Matchers}
 
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
+import CalHelper._
 
 /**
  * Created by lma on 10/27/2015.
@@ -22,7 +23,7 @@ class PipelineSpec extends TestKit(ActorSystem("RequestContextSpecSys")) with Fl
   implicit val fm = ActorMaterializer()
   implicit val dispatcher = system.dispatcher
 
-  implicit def calScopeToName(calScope : CalScope) : String = {
+  implicit def calScopeToName(calScope: CalScope): String = {
     calScope match {
       case null => "Unknown"
       case other => other.name
@@ -40,7 +41,7 @@ class PipelineSpec extends TestKit(ActorSystem("RequestContextSpecSys")) with Fl
 
   val syncIn1 = new SyncHandler {
     override def handle(ctx: RequestContext): RequestContext = {
-      val name : String = CalContext.current
+      val name: String = CalContext.current
       ctx.withAttributes("syncIn1" -> name)
     }
   }
@@ -68,11 +69,14 @@ class PipelineSpec extends TestKit(ActorSystem("RequestContextSpecSys")) with Fl
   }
 
   val masterAction: HttpRequest => Future[HttpResponse] =
-    req => Future.successful(HttpResponse(entity = "HelloWorld"))
+    req => {
+      val hs = scala.collection.immutable.Seq(RawHeader("masterAction", CalContext.current))
+      Future.successful(HttpResponse(entity = "HelloWorld", headers = hs))
+    }
 
   val masterFlow: Flow[RequestContext, RequestContext, Unit] =
     Flow[RequestContext].mapAsync(1) {
-      ctx => masterAction(ctx.request).map(resp => ctx.copy(response = Option(resp)))
+      ctx => cal(ctx, masterAction(ctx.request).map(resp => ctx.copy(response = Option(resp))))
     }
 
   "Simple flow" should "work" in {
@@ -84,6 +88,7 @@ class PipelineSpec extends TestKit(ActorSystem("RequestContextSpecSys")) with Fl
 
     result.headers.find(_.name == "syncIn1").get.value() should be("TestTran")
     result.headers.find(_.name == "asyncIn1").get.value() should be("TestTran")
+    result.headers.find(_.name == "masterAction").get.value() should be("TestTran")
     result.headers.find(_.name == "syncOut1").get.value() should be("TestTran")
     result.headers.find(_.name == "asyncOut1").get.value() should be("TestTran")
     val sb = new StringBuilder
@@ -100,6 +105,7 @@ class PipelineSpec extends TestKit(ActorSystem("RequestContextSpecSys")) with Fl
     val result = Await.result(resp, 5 seconds)
 
     result.headers.find(_.name == "syncIn1").get.value() should be("TestTran")
+    result.headers.find(_.name == "masterAction").get.value() should be("TestTran")
     result.headers.find(_.name == "syncOut1").get.value() should be("TestTran")
     val sb = new StringBuilder
     Await.result(result.entity.dataBytes.map(_.utf8String).runForeach(sb.append(_)), 3 second)

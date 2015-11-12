@@ -6,7 +6,8 @@ import akka.stream.scaladsl.{Flow, Keep, Sink, Source}
 import com.ebay.squbs.rocksqubs.cal.ctx.{CalContext, CalScopeAware}
 
 import scala.concurrent.{ExecutionContext, Future}
-import scala.util.Try
+import scala.util.{Success, Try}
+import CalHelper._
 
 /**
  * Created by lma on 11/2/2015.
@@ -33,22 +34,12 @@ case class Pipeline(setting: PipelineSetting,
 
   private def genFlow(handlers: Seq[Handler]) = {
     Flow[RequestContext].mapAsync(1) {
-      ctx => process(Left(Try(ctx)), handlers) match {
+      ctx => process(Left(Success(ctx)), handlers) match {
         case Left(rc) => Future.fromTry(rc)
         case Right(frc) => frc
       }
     }
   }
-
-  private def calWrapper[T](rc: RequestContext, f: => T): T = {
-    if(rc.isInstanceOf[CalScopeAware]){
-      val csa = rc.asInstanceOf[CalScopeAware]
-      CalContext.withContext(csa.calScope) {
-        f
-      }
-    }else f
-  }
-
 
   private def process(ctx: Either[Try[RequestContext], Future[RequestContext]],
                       rest: Seq[Handler]): Either[Try[RequestContext], Future[RequestContext]] = {
@@ -56,10 +47,10 @@ case class Pipeline(setting: PipelineSetting,
     val newCtx = rest.size match {
       case 0 => ctx
       case _ => (rest(0), ctx) match {
-        case (h: SyncHandler, Left(c)) => Left(c.map(rc => calWrapper(rc, h.handle(rc))))
-        case (h: SyncHandler, Right(fc)) => Right(fc.map(rc => calWrapper(rc, h.handle(rc))))
-        case (h: AsyncHandler, Left(c)) => Right(Future.fromTry(c).flatMap(rc => calWrapper(rc, h.handle(rc))))
-        case (h: AsyncHandler, Right(fc)) => Right(fc.flatMap(rc => calWrapper(rc, h.handle(rc))))
+        case (h: SyncHandler, Left(c)) => Left(c.map(rc => cal(rc, h.handle(rc))))
+        case (h: SyncHandler, Right(fc)) => Right(fc.map(rc => cal(rc, h.handle(rc))))
+        case (h: AsyncHandler, Left(c)) => Right(Future.fromTry(c).flatMap(rc => cal(rc, h.handle(rc))))
+        case (h: AsyncHandler, Right(fc)) => Right(fc.flatMap(rc => cal(rc, h.handle(rc))))
       }
     }
 
