@@ -7,9 +7,13 @@ import com.ebay.squbs.rocksqubs.cal.ctx.{CalScope, CalScopeAware}
 /**
  * Created by lma on 10/27/2015.
  */
+//TODO better naming
+case class ErrorLog(error : Throwable)
+
 case class RequestContext(request: HttpRequest,
                           response: Option[HttpResponse] = None,
-                          attributes: Map[String, Any] = Map.empty) extends CalScopeAware {
+                          attributes: Map[String, Any] = Map.empty,
+                          error : Option[ErrorLog] = None) extends CalScopeAware {
 
   val calScope: CalScope = CalScopeAware.default.calScope
 

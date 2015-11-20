@@ -6,7 +6,7 @@ import akka.stream.scaladsl.{Flow, Keep, Sink, Source}
 import com.ebay.squbs.rocksqubs.cal.ctx.{CalContext, CalScopeAware}
 
 import scala.concurrent.{ExecutionContext, Future}
-import scala.util.{Success, Try}
+import scala.util.{Failure, Success, Try}
 import CalHelper._
 
 /**
@@ -19,6 +19,10 @@ trait SyncHandler extends Handler {
   def handle(ctx: RequestContext): RequestContext
 }
 
+object DefaultSyncHandler extends SyncHandler {
+  override def handle(ctx: RequestContext): RequestContext = ctx
+}
+
 trait AsyncHandler extends Handler {
   def handle(ctx: RequestContext): Future[RequestContext]
 }
@@ -26,11 +30,23 @@ trait AsyncHandler extends Handler {
 case class PipelineSetting(inbound: Seq[Handler], outbound: Seq[Handler])
 
 case class Pipeline(setting: PipelineSetting,
-                    master: Flow[RequestContext, RequestContext, Unit])(implicit exec: ExecutionContext) {
+                    master: Flow[RequestContext, RequestContext, Unit],
+                     preInbound : SyncHandler = DefaultSyncHandler,
+                     postOutbound : SyncHandler = DefaultSyncHandler)(implicit exec: ExecutionContext, mat: Materializer) {
 
 
   val inbound: Flow[RequestContext, RequestContext, Unit] = genFlow(setting.inbound)
   val outbound: Flow[RequestContext, RequestContext, Unit] = genFlow(setting.outbound)
+  val masterFlow: Flow[RequestContext, RequestContext, Unit] = {
+    Flow[RequestContext].mapAsync(1) {
+      ctx => ctx.error match {
+        case None =>
+          val result: Future[RequestContext] = Source.single(ctx).via(master).runWith(Sink.head)
+          result
+        case Some(t) => Future.successful(ctx.copy(response = Option(HttpResponse(500, entity = t.error.getMessage))))
+      }
+    }
+  }
 
   private def genFlow(handlers: Seq[Handler]) = {
     Flow[RequestContext].mapAsync(1) {
@@ -47,10 +63,10 @@ case class Pipeline(setting: PipelineSetting,
     val newCtx = rest.size match {
       case 0 => ctx
       case _ => (rest(0), ctx) match {
-        case (h: SyncHandler, Left(c)) => Left(c.map(rc => cal(rc, h.handle(rc))))
-        case (h: SyncHandler, Right(fc)) => Right(fc.map(rc => cal(rc, h.handle(rc))))
-        case (h: AsyncHandler, Left(c)) => Right(Future.fromTry(c).flatMap(rc => cal(rc, h.handle(rc))))
-        case (h: AsyncHandler, Right(fc)) => Right(fc.flatMap(rc => cal(rc, h.handle(rc))))
+        case (h: SyncHandler, Left(c)) => Left(c.map(handleSync(_, h)))
+        case (h: SyncHandler, Right(fc)) => Right(fc.map(handleSync(_, h)))
+        case (h: AsyncHandler, Left(c)) => Right(Future.fromTry(c).flatMap(handleAsync(_, h)))
+        case (h: AsyncHandler, Right(fc)) => Right(fc.flatMap(handleAsync(_, h)))
       }
     }
 
@@ -58,15 +74,39 @@ case class Pipeline(setting: PipelineSetting,
     else newCtx
   }
 
+  private def handleAsync(rc: RequestContext, h: AsyncHandler): Future[RequestContext] = {
+    cal(rc, {
+      rc.error match {
+        case None => Try(h.handle(rc)) match {
+          case Success(result) => result
+          case Failure(t) => Future.successful(rc.copy(error = Option(ErrorLog(t))))
+        }
+        case _ => Future.successful(rc)
+      }
+    })
+  }
+
+  private def handleSync(rc: RequestContext, h: SyncHandler): RequestContext = {
+    cal(rc, {
+      rc.error match {
+        case None => Try(h.handle(rc)) match {
+          case Success(result) => result
+          case Failure(t) => rc.copy(error = Option(ErrorLog(t)))
+        }
+        case _ => rc
+      }
+    }
+    )
+  }
 
   val compositeSink: Sink[RequestContext, Future[HttpResponse]] =
     inbound
-      .via(master)
+      .via(masterFlow)
       .via(outbound)
       .map(_.response.getOrElse(HttpResponse(404, entity = "Unknown resource!")))
       .toMat(Sink.head)(Keep.right)
 
-  def run(request: HttpRequest)(implicit materializer: Materializer): Future[HttpResponse] = {
+  def run(request: HttpRequest): Future[HttpResponse] = {
     Source.single(RequestContext(request)).runWith(compositeSink)
   }
 }

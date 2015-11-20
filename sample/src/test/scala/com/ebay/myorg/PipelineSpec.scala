@@ -2,7 +2,7 @@ package com.ebay.myorg
 
 import akka.actor.ActorSystem
 import akka.http.scaladsl.model.headers.RawHeader
-import akka.http.scaladsl.model.{HttpRequest, HttpResponse}
+import akka.http.scaladsl.model.{StatusCodes, HttpRequest, HttpResponse}
 import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.Flow
 import akka.testkit.TestKit
@@ -36,6 +36,12 @@ class PipelineSpec extends TestKit(ActorSystem("RequestContextSpecSys")) with Fl
         println("CalScope in startTran: " + CalContext.current)
         ctx.copy()
       }
+    }
+  }
+
+  val syncException = new SyncHandler {
+    override def handle(ctx: RequestContext): RequestContext = {
+      throw new RuntimeException("BadMan")
     }
   }
 
@@ -110,6 +116,24 @@ class PipelineSpec extends TestKit(ActorSystem("RequestContextSpecSys")) with Fl
     val sb = new StringBuilder
     Await.result(result.entity.dataBytes.map(_.utf8String).runForeach(sb.append(_)), 3 second)
     sb.toString() should be("HelloWorld")
+
+  }
+
+  "Simple flow with exception" should "bypass all subsequent handlers" in {
+
+    val pipeline = Pipeline(PipelineSetting(Seq(startTran, asyncIn1, syncException, syncIn1), Seq(asyncOut1, syncOut1)), masterFlow)
+    val resp = pipeline.run(HttpRequest())
+
+    val result = Await.result(resp, 5 seconds)
+    result.status should be(StatusCodes.InternalServerError)
+    result.headers.find(_.name == "asyncIn1") should be(None)
+    result.headers.find(_.name == "syncIn1") should be(None)
+    result.headers.find(_.name == "masterAction") should be(None)
+    result.headers.find(_.name == "syncOut1") should be(None)
+    result.headers.find(_.name == "asyncOut1") should be(None)
+    val sb = new StringBuilder
+    Await.result(result.entity.dataBytes.map(_.utf8String).runForeach(sb.append(_)), 3 second)
+    sb.toString() should be("BadMan")
 
   }
 
