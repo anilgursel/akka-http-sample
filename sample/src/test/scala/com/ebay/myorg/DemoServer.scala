@@ -10,7 +10,7 @@ import akka.http.scaladsl.server.Directives._
 import akka.http.scaladsl.server.Route
 import akka.pattern.ask
 import akka.stream.ActorMaterializer
-import akka.stream.scaladsl.{Flow, Sink, Source}
+import akka.stream.scaladsl._
 import akka.util.Timeout
 import com.typesafe.config.{Config, ConfigFactory}
 
@@ -38,13 +38,18 @@ object DemoServer extends App {
     }
   }
 
-  val inbound: Flow[RequestContext, RequestContext, Unit] = Flow[RequestContext].map(ctx => ctx.withAttributes("key1" -> "value1").addRequestHeaders(RawHeader("reqHeader", "reqHeaderValue")))
+  type Transformer = HttpRequest => Future[HttpResponse]
+  case class ContextHolder(ctx : RequestContext, transformer : Option[Transformer])
 
-  val outbound: Flow[RequestContext, RequestContext, Unit] = Flow[RequestContext].map {
+
+  val inbound: Flow[ContextHolder, ContextHolder, Any] = Flow[ContextHolder].map(holder => holder.copy(ctx = holder.ctx.withAttributes("key1" -> "value1").addRequestHeaders(RawHeader("reqHeader", "reqHeaderValue"))))
+
+  val outbound: Flow[RequestContext, RequestContext, Any] = Flow[RequestContext].map {
     ctx =>
       val newResp = ctx.response.map(r => r.copy(headers = r.headers ++ attributes2Headers(ctx.attributes) ++ ctx.request.headers))
       ctx.copy(response = newResp)
   }
+
 
 
   //http://localhost:9001/actor
@@ -57,31 +62,47 @@ object DemoServer extends App {
       (Path("/actor") -> Left(actorRef))
 
 
-  val bindingFuture = Http().bindAndHandleAsync({
+  val preFlow : Flow[HttpRequest, ContextHolder, Any] = Flow[HttpRequest].map{
     request => services.find { entry =>
       request.uri.path.startsWith(entry._1)
     } match {
       case Some(e) =>
-        val masterFlow: Flow[RequestContext, RequestContext, Unit] = Flow[RequestContext].mapAsync(1) {
-          ctx =>
-            val response: Future[HttpResponse] = e._2 match {
-              case Right(r) => Source.single(ctx.request).via(pathPrefix(e._1.tail.toString())(r)).runWith(Sink.head)
-              case Left(actor) => (actor ? ctx.request).mapTo[HttpResponse]
-            }
-            response.map(resp => ctx.copy(response = Option(resp)))
+        e._2 match {
+          case Right(r) =>
+            ContextHolder(RequestContext(request),Some(Route.asyncHandler(pathPrefix(e._1.tail.toString())(r))))
+          //Source.single(ctx.request).via(pathPrefix(e._1.tail.toString())(r)).runWith(Sink.head)
+          case Left(actor) =>
+            ContextHolder(RequestContext(request),Some({req : HttpRequest => (actor ? req).mapTo[HttpResponse]}))
         }
-
-        Source.single(RequestContext(request))
-          .via(inbound)
-          .via(masterFlow)
-          .via(outbound)
-          .map(_.response.getOrElse(HttpResponse(404, entity = "Unknown resource!")))
-          .runWith(Sink.head)
-
-
-      case None => Future.successful(HttpResponse(404, entity = "Unknown resource!"))
+      case None => ContextHolder(RequestContext(request),None)
     }
-  }, interface = "localhost", port = 9001)
+  }
+
+  val dispatchFlow : Flow[ContextHolder , HttpResponse , Any] = Flow() { implicit b =>
+    import FlowGraph.Implicits._
+
+    val broadcast = b.add(Broadcast[ContextHolder](2))
+    val merge = b.add(Merge[HttpResponse](2))
+
+    val goodPathFilter = Flow[ContextHolder]
+      .filter(e => e.transformer.isDefined)
+    val badPathFilter = Flow[ContextHolder].filter(e => e.transformer.isEmpty)
+    val coreFlow = Flow[ContextHolder].mapAsync(1){
+      ch => ch.transformer.get.apply(ch.ctx.request).map(resp => ch.ctx.copy(response = Option(resp)))
+    }
+    val respFlow = Flow[RequestContext].map(_.response.getOrElse(HttpResponse(404, entity = "Unknown resource!")))
+
+    broadcast.out(0) ~> goodPathFilter ~> inbound ~> coreFlow ~> outbound ~> respFlow ~> merge.in(0)
+    broadcast.out(1) ~> badPathFilter.map(_.ctx.response.getOrElse(HttpResponse(404, entity = "Unknown resource!")))  ~> merge.in(1)
+
+    // expose ports
+    (broadcast.in, merge.out)
+  }
+
+  val bizFlow : Flow[HttpRequest, HttpResponse, Any] = preFlow.via(dispatchFlow)
+
+  val bindingFuture = Http().bindAndHandle(bizFlow, interface = "localhost", port = 9001)
+
 
   Await.result(bindingFuture, 2.second) // throws if binding fails
   println("Server online at http://localhost:9001")
