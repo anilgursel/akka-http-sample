@@ -62,47 +62,38 @@ object DemoServer extends App {
       (Path("/actor") -> Left(actorRef))
 
 
-  val preFlow: Flow[HttpRequest, ContextHolder, Any] = Flow[HttpRequest].map {
-    request => services.find { entry =>
-      request.uri.path.startsWith(entry._1)
-    } match {
-      case Some(e) =>
-        e._2 match {
-          case Right(r) =>
-            ContextHolder(RequestContext(request), Some(Route.asyncHandler(pathPrefix(e._1.tail.toString())(r))))
-          //Source.single(ctx.request).via(pathPrefix(e._1.tail.toString())(r)).runWith(Sink.head)
-          case Left(actor) =>
-            ContextHolder(RequestContext(request), Some({ req: HttpRequest => (actor ? req).mapTo[HttpResponse]}))
-        }
-      case None => ContextHolder(RequestContext(request), None)
-    }
-  }
-
-  val dispatchFlow: Flow[ContextHolder, HttpResponse, Any] =
+  val dispatchFlow: Flow[HttpRequest, HttpResponse, Any] =
     Flow.fromGraph(FlowGraph.create() { implicit b =>
       import akka.stream.scaladsl.FlowGraph.Implicits._
 
       val broadcast = b.add(Broadcast[ContextHolder](2))
       val merge = b.add(Merge[HttpResponse](2))
+      val pre = b.add(Flow[HttpRequest].map {
+        request => services.find { entry =>
+          request.uri.path.startsWith(entry._1)
+        } match {
+          case Some((p, Right(r))) => ContextHolder(RequestContext(request), Some(Route.asyncHandler(pathPrefix(p.tail.toString())(r))))
+          case Some((_, Left(actor))) => ContextHolder(RequestContext(request), Some({ req: HttpRequest => (actor ? req).mapTo[HttpResponse]}))
+          case _ => ContextHolder(RequestContext(request), None)
+        }
+      })
 
-      val goodPathFilter = Flow[ContextHolder]
-        .filter(e => e.transformer.isDefined)
-      val badPathFilter = Flow[ContextHolder].filter(e => e.transformer.isEmpty)
+      val goodFilter = Flow[ContextHolder].filter(_.transformer.isDefined)
+      val badFilter = Flow[ContextHolder].filter(_.transformer.isEmpty)
       val coreFlow = Flow[ContextHolder].mapAsync(1) {
         ch => ch.transformer.get.apply(ch.ctx.request).map(resp => ch.ctx.copy(response = Option(resp)))
       }
+
       val respFlow = Flow[RequestContext].map(_.response.getOrElse(HttpResponse(404, entity = "Unknown resource!")))
 
-      broadcast.out(0) ~> goodPathFilter ~> inbound ~> coreFlow ~> outbound ~> respFlow ~> merge.in(0)
-      broadcast.out(1) ~> badPathFilter.map(_.ctx.response.getOrElse(HttpResponse(404, entity = "Unknown resource!"))) ~> merge.in(1)
+      pre ~> broadcast ~> goodFilter ~> inbound ~> coreFlow ~> outbound ~> respFlow ~> merge
+      broadcast ~> badFilter.map(_.ctx) ~> respFlow ~> merge
 
       // expose ports
-      FlowShape(broadcast.in, merge.out)
+      FlowShape(pre.inlet, merge.out)
     })
 
-  val bizFlow: Flow[HttpRequest, HttpResponse, Any] = preFlow.via(dispatchFlow)
-
-  val bindingFuture = Http().bindAndHandle(bizFlow, interface = "localhost", port = 9001)
+  val bindingFuture = Http().bindAndHandle(dispatchFlow, interface = "localhost", port = 9001)
 
 
   Await.result(bindingFuture, 2.second) // throws if binding fails
