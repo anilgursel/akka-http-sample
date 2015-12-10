@@ -3,11 +3,10 @@ package com.ebay.myorg
 import akka.http.scaladsl.model.{HttpRequest, HttpResponse}
 import akka.stream.Materializer
 import akka.stream.scaladsl.{Flow, Keep, Sink, Source}
-import com.ebay.squbs.rocksqubs.cal.ctx.{CalContext, CalScopeAware}
+import com.ebay.myorg.CalHelper._
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
-import CalHelper._
 
 /**
  * Created by lma on 11/2/2015.
@@ -31,9 +30,10 @@ case class PipelineSetting(inbound: Seq[Handler], outbound: Seq[Handler])
 
 case class Pipeline(setting: PipelineSetting,
                     master: Flow[RequestContext, RequestContext, Unit],
-                     preInbound : SyncHandler = DefaultSyncHandler,
-                     postOutbound : SyncHandler = DefaultSyncHandler)(implicit exec: ExecutionContext, mat: Materializer) {
+                    preInbound: SyncHandler = DefaultSyncHandler,
+                    postOutbound: SyncHandler = DefaultSyncHandler)(implicit exec: ExecutionContext, mat: Materializer) {
 
+  import com.ebay.myorg.Pipeline._
 
   val inbound: Flow[RequestContext, RequestContext, Unit] = genFlow(setting.inbound)
   val outbound: Flow[RequestContext, RequestContext, Unit] = genFlow(setting.outbound)
@@ -99,16 +99,32 @@ case class Pipeline(setting: PipelineSetting,
     )
   }
 
-  val compositeSink: Sink[RequestContext, Future[HttpResponse]] =
-    inbound
-      .via(masterFlow)
-      .via(outbound)
-      .map(_.response.getOrElse(HttpResponse(404, entity = "Unknown resource!")))
+  val baseFlow = inbound.via(masterFlow).via(outbound)
+
+
+  private def compositeSink(defaultResponse: HttpResponse): Sink[RequestContext, Future[HttpResponse]] =
+    baseFlow.map(_.response.getOrElse(defaultResponse))
       .toMat(Sink.head)(Keep.right)
 
   def run(request: HttpRequest): Future[HttpResponse] = {
-    Source.single(RequestContext(request)).runWith(compositeSink)
+    run(request, default404)
   }
+
+  def run(request: HttpRequest, defaultResponse: HttpResponse): Future[HttpResponse] = {
+    Source.single(RequestContext(request)).runWith(compositeSink(defaultResponse))
+  }
+
+
+  def toFlow(defaultResponse: HttpResponse): Flow[HttpRequest, HttpResponse, Any] = Flow[HttpRequest]
+    .map(RequestContext(_))
+    .via(baseFlow)
+    .map(_.response.getOrElse(defaultResponse))
+
+
+}
+
+object Pipeline {
+  val default404 = HttpResponse(404, entity = "Unknown resource!")
 }
 
 

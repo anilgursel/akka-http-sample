@@ -88,7 +88,7 @@ class PipelineSpec extends TestKit(ActorSystem("RequestContextSpecSys")) with Fl
   "Simple flow" should "work" in {
 
     val pipeline = Pipeline(PipelineSetting(Seq(startTran, asyncIn1, syncIn1), Seq(asyncOut1, syncOut1)), masterFlow)
-    val resp = pipeline.run(HttpRequest())
+    val resp = pipeline.run(HttpRequest(), HttpResponse(404, entity = "Unknown resource!"))
 
     val result = Await.result(resp, 5 seconds)
 
@@ -106,7 +106,7 @@ class PipelineSpec extends TestKit(ActorSystem("RequestContextSpecSys")) with Fl
   "Simple flow without future" should "work" in {
 
     val pipeline = Pipeline(PipelineSetting(Seq(startTran, syncIn1), Seq(syncOut1)), masterFlow)
-    val resp = pipeline.run(HttpRequest())
+    val resp = pipeline.run(HttpRequest(), HttpResponse(404, entity = "Unknown resource!"))
 
     val result = Await.result(resp, 5 seconds)
 
@@ -122,7 +122,7 @@ class PipelineSpec extends TestKit(ActorSystem("RequestContextSpecSys")) with Fl
   "Simple flow with exception" should "bypass all subsequent handlers" in {
 
     val pipeline = Pipeline(PipelineSetting(Seq(startTran, asyncIn1, syncException, syncIn1), Seq(asyncOut1, syncOut1)), masterFlow)
-    val resp = pipeline.run(HttpRequest())
+    val resp = pipeline.run(HttpRequest(), HttpResponse(404, entity = "Unknown resource!"))
 
     val result = Await.result(resp, 5 seconds)
     result.status should be(StatusCodes.InternalServerError)
