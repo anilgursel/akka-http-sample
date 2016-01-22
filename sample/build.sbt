@@ -19,7 +19,7 @@ dependencyOverrides ++= Set(
 )
 
 libraryDependencies ++= Seq(
-  "com.typesafe.akka" %% "akka-http-experimental" % "2.0-M1",
+  "com.typesafe.akka" %% "akka-http-experimental" % "2.0.2",
   "com.typesafe.akka" %% "akka-agent" % akkaV,
   "com.ebay.squbs" %% "rocksqubs-cal" % rockSqubsV,
   "com.typesafe.akka" %% "akka-testkit" % akkaV % "test",

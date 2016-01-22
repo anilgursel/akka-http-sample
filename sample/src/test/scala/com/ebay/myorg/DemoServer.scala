@@ -63,8 +63,8 @@ object DemoServer extends App {
 
 
   val dispatchFlow: Flow[HttpRequest, HttpResponse, Any] =
-    Flow.fromGraph(FlowGraph.create() { implicit b =>
-      import akka.stream.scaladsl.FlowGraph.Implicits._
+    Flow.fromGraph(GraphDSL.create() { implicit b =>
+      import GraphDSL.Implicits._
 
       val broadcast = b.add(Broadcast[ContextHolder](2))
       val merge = b.add(Merge[HttpResponse](2))
@@ -90,7 +90,7 @@ object DemoServer extends App {
       broadcast ~> badFilter.map(_.ctx) ~> respFlow ~> merge
 
       // expose ports
-      FlowShape(pre.inlet, merge.out)
+      FlowShape(pre.in, merge.out)
     })
 
   val bindingFuture = Http().bindAndHandle(dispatchFlow, interface = "localhost", port = 9001)
@@ -136,7 +136,7 @@ class DemoActor extends Actor {
       //                  actorRef ! LastChunk()
 
       val source = Source(List(Chunk("From"), Chunk("Actor"), LastChunk))
-      sender() ! HttpResponse(entity = HttpEntity.Chunked(ContentTypes.`text/plain`, source))
+      sender() ! HttpResponse(entity = HttpEntity.Chunked(ContentTypes.`text/plain(UTF-8)`, source))
 
   }
 }
