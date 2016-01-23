@@ -11,6 +11,7 @@ import com.ebay.squbs.rocksqubs.cal.ctx.{CalScope, CalScopeAware}
 case class ErrorLog(error : Throwable)
 
 case class RequestContext(request: HttpRequest,
+                          id: Int = 1,
                           response: Option[HttpResponse] = None,
                           attributes: Map[String, Any] = Map.empty,
                           error : Option[ErrorLog] = None) extends CalScopeAware {

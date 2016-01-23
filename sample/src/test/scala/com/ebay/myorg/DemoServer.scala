@@ -10,7 +10,8 @@ import akka.http.scaladsl.server.Directives._
 import akka.http.scaladsl.server.Route
 import akka.pattern.ask
 import akka.stream.scaladsl._
-import akka.stream.{ActorMaterializer, FlowShape}
+import akka.stream.stage.{OutHandler, InHandler, GraphStageLogic, GraphStage}
+import akka.stream._
 import akka.util.Timeout
 import com.ebay.myorg.RequestContext._
 import com.typesafe.config.{Config, ConfigFactory}
@@ -66,15 +67,17 @@ object DemoServer extends App {
     Flow.fromGraph(GraphDSL.create() { implicit b =>
       import GraphDSL.Implicits._
 
+      val rcCreator = b.add(new RequestContextCreator)
       val broadcast = b.add(Broadcast[ContextHolder](2))
-      val merge = b.add(Merge[HttpResponse](2))
-      val pre = b.add(Flow[HttpRequest].map {
-        request => services.find { entry =>
-          request.uri.path.startsWith(entry._1)
+      val merge = b.add(Merge[RequestContext](2))
+      val pre = b.add(Flow[RequestContext].map {
+        rc =>
+          services.find { entry =>
+          rc.request.uri.path.startsWith(entry._1)
         } match {
-          case Some((p, Right(r))) => ContextHolder(RequestContext(request), Some(Route.asyncHandler(pathPrefix(p.tail.toString())(r))))
-          case Some((_, Left(actor))) => ContextHolder(RequestContext(request), Some({ req: HttpRequest => (actor ? req).mapTo[HttpResponse]}))
-          case _ => ContextHolder(RequestContext(request), None)
+          case Some((p, Right(r))) => ContextHolder(rc, Some(Route.asyncHandler(pathPrefix(p.tail.toString())(r))))
+          case Some((_, Left(actor))) => ContextHolder(rc, Some({ req: HttpRequest => (actor ? req).mapTo[HttpResponse]}))
+          case _ => ContextHolder(rc, None)
         }
       })
 
@@ -84,13 +87,19 @@ object DemoServer extends App {
         ch => ch.transformer.get.apply(ch.ctx.request).map(resp => ch.ctx.copy(response = Option(resp)))
       }
 
-      val respFlow = Flow[RequestContext].map(_.response.getOrElse(HttpResponse(404, entity = "Unknown resource!")))
+      val respFlow = b.add(Flow[RequestContext].map(_.response.getOrElse(HttpResponse(404, entity = "Unknown resource!"))))
 
-      pre ~> broadcast ~> goodFilter ~> inbound ~> coreFlow ~> outbound ~> respFlow ~> merge
-      broadcast ~> badFilter.map(_.ctx) ~> respFlow ~> merge
+      object RequestContextOrdering extends Ordering[RequestContext] {
+        def compare(a:RequestContext, b:RequestContext) = b.id compare a.id
+      }
+
+      val orderingStage = b.add(new OrderingStage[RequestContext, Int](0, (x: Int) => x + 1, (rc: RequestContext) => rc.id)(RequestContextOrdering))
+
+      rcCreator ~> pre ~> broadcast ~> goodFilter ~> inbound ~> coreFlow ~> outbound  ~> merge ~> orderingStage ~> respFlow
+                          broadcast ~> badFilter.map(_.ctx)                           ~> merge
 
       // expose ports
-      FlowShape(pre.in, merge.out)
+      FlowShape(rcCreator.in, respFlow.out)
     })
 
   val bindingFuture = Http().bindAndHandle(dispatchFlow, interface = "localhost", port = 9001)
@@ -141,3 +150,28 @@ class DemoActor extends Actor {
   }
 }
 
+// TODO This is temporary..  Grrr..
+class RequestContextCreator extends GraphStage[FlowShape[HttpRequest, RequestContext]] {
+
+  val in = Inlet[HttpRequest]("Filter.in")
+  val out = Outlet[RequestContext]("Filter.out")
+  val shape = FlowShape.of(in, out)
+
+  override def createLogic(inheritedAttributes: Attributes): GraphStageLogic =
+    new GraphStageLogic(shape) {
+
+      var state = 0
+      setHandler(in, new InHandler {
+        override def onPush(): Unit = {
+          push(out, RequestContext(grab(in), state))
+          state += 1
+        }
+      })
+
+      setHandler(out, new OutHandler {
+        override def onPull(): Unit = {
+          tryPull(in)
+        }
+      })
+    }
+}
