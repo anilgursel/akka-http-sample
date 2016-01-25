@@ -67,17 +67,17 @@ object DemoServer extends App {
     Flow.fromGraph(GraphDSL.create() { implicit b =>
       import GraphDSL.Implicits._
 
-      val rcCreator = b.add(new RequestContextCreator)
+      val zip = b.add(Zip[HttpRequest, Int]())
       val broadcast = b.add(Broadcast[ContextHolder](2))
       val merge = b.add(Merge[RequestContext](2))
-      val pre = b.add(Flow[RequestContext].map {
-        rc =>
+      val pre = b.add(Flow[(HttpRequest, Int)].map {
+        case (request, id) =>
           services.find { entry =>
-          rc.request.uri.path.startsWith(entry._1)
+          request.uri.path.startsWith(entry._1)
         } match {
-          case Some((p, Right(r))) => ContextHolder(rc, Some(Route.asyncHandler(pathPrefix(p.tail.toString())(r))))
-          case Some((_, Left(actor))) => ContextHolder(rc, Some({ req: HttpRequest => (actor ? req).mapTo[HttpResponse]}))
-          case _ => ContextHolder(rc, None)
+          case Some((p, Right(r))) => ContextHolder(RequestContext(request, id), Some(Route.asyncHandler(pathPrefix(p.tail.toString())(r))))
+          case Some((_, Left(actor))) => ContextHolder(RequestContext(request, id), Some({ req: HttpRequest => (actor ? req).mapTo[HttpResponse]}))
+          case _ => ContextHolder(RequestContext(request, id), None)
         }
       })
 
@@ -95,11 +95,12 @@ object DemoServer extends App {
 
       val orderingStage = b.add(new OrderingStage[RequestContext, Int](0, (x: Int) => x + 1, (rc: RequestContext) => rc.id)(RequestContextOrdering))
 
-      rcCreator ~> pre ~> broadcast ~> goodFilter ~> inbound ~> coreFlow ~> outbound  ~> merge ~> orderingStage ~> respFlow
-                          broadcast ~> badFilter.map(_.ctx)                           ~> merge
+      Source.fromIterator(() => Iterator.from(0)) ~> zip.in1
+      zip.out ~> pre ~> broadcast ~> goodFilter ~> inbound ~> coreFlow ~> outbound  ~> merge ~> orderingStage ~> respFlow
+                        broadcast ~> badFilter.map(_.ctx)                           ~> merge
 
       // expose ports
-      FlowShape(rcCreator.in, respFlow.out)
+      FlowShape(zip.in0, respFlow.out)
     })
 
   val bindingFuture = Http().bindAndHandle(dispatchFlow, interface = "localhost", port = 9001)
@@ -148,30 +149,4 @@ class DemoActor extends Actor {
       sender() ! HttpResponse(entity = HttpEntity.Chunked(ContentTypes.`text/plain(UTF-8)`, source))
 
   }
-}
-
-// TODO This is temporary..  Grrr..
-class RequestContextCreator extends GraphStage[FlowShape[HttpRequest, RequestContext]] {
-
-  val in = Inlet[HttpRequest]("Filter.in")
-  val out = Outlet[RequestContext]("Filter.out")
-  val shape = FlowShape.of(in, out)
-
-  override def createLogic(inheritedAttributes: Attributes): GraphStageLogic =
-    new GraphStageLogic(shape) {
-
-      var state = 0
-      setHandler(in, new InHandler {
-        override def onPush(): Unit = {
-          push(out, RequestContext(grab(in), state))
-          state += 1
-        }
-      })
-
-      setHandler(out, new OutHandler {
-        override def onPull(): Unit = {
-          tryPull(in)
-        }
-      })
-    }
 }
